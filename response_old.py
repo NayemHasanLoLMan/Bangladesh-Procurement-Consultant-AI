@@ -62,7 +62,7 @@ class ProcurementConsultant:
         গুরুত্বপূর্ণ নির্দেশনা:
         ১. প্রসঙ্গ বুঝুন: লাইনের মধ্যে পড়ুন। ব্যবহারকারী আসলে কী অর্জন করতে চাইছেন?
         ২. নথিগুলো বুদ্ধিমত্তার সঙ্গে ব্যবহার করুন: নির্দিষ্ট নিয়ম উল্লেখ করুন এবং সেগুলো সহজ ভাষায় ব্যাখ্যা করুন
-        ৩. সমাধান প্রদান করুন: শুধু বলবেন না "নিয়ম X অনুযায়ী Y বলা হয়েছে" — বরং এটি কীভাবে তাদের পরিস্থিতিতে প্রয়োগ করা যায় তাও ব্যাখ্যা করুন
+        ৩. সমাধান প্রদান করুন: শুধু বলবেন না “নিয়ম X অনুযায়ী Y বলা হয়েছে” — বরং এটি কীভাবে তাদের পরিস্থিতিতে প্রয়োগ করা যায় তাও ব্যাখ্যা করুন
         ৪. পরামর্শমূলক হন: বিকল্প দিন, সাধারণ সমস্যা সম্পর্কে সতর্ক করুন, সর্বোত্তম অনুশীলন পরামর্শ দিন
         ৫. বিষয়ে থাকুন: শুধুমাত্র বাংলাদেশ সরকারি ক্রয় বিষয় পরিচালনা করুন
         ৬. ব্যবহারিক হন: যদি নথিতে কিছু না থাকে, আপনার সাধারণ BPPA জ্ঞান ব্যবহার করুন কিন্তু স্পষ্টভাবে উল্লেখ করুন
@@ -88,9 +88,44 @@ class ProcurementConsultant:
         )
         return response.data[0].embedding
     
-    def search_documents(self, query, top_k=5):
-        """Search vector database - reduced from 7 to 5 for speed"""
-        query_embedding = list(self.get_embedding(query))
+    def analyze_query_intent(self, query, language="english"):
+        """Analyze the user's query to understand their real intent and problem"""
+        intent_prompts = {
+            "english": f"""Analyze this user query about Bangladesh public procurement and identify:
+            1. What is their actual problem or need?
+            2. What stage of the procurement process are they in?
+            3. What specific information or guidance do they need?
+
+            Query: {query}
+
+            Provide a brief analysis (2-3 sentences).""",
+                        
+            "bangla": f"""বাংলাদেশ সরকারি ক্রয় সম্পর্কে এই ব্যবহারকারীর প্রশ্ন বিশ্লেষণ করুন এবং চিহ্নিত করুন:
+            ১. তাদের প্রকৃত সমস্যা বা প্রয়োজন কী?
+            ২. তারা ক্রয় প্রক্রিয়ার কোন পর্যায়ে আছেন?
+            ৩. তাদের কোন নির্দিষ্ট তথ্য বা নির্দেশনা প্রয়োজন?
+
+            প্রশ্ন: {query}
+
+            একটি সংক্ষিপ্ত বিশ্লেষণ প্রদান করুন (২-৩ বাক্য)।"""
+        }
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=[
+                    {"role": "user", "content": intent_prompts[language]}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            return response.choices[0].message.content
+        except:
+            return None
+    
+    def search_documents(self, query, top_k=7):
+        """Search vector database with higher top_k for better context"""
+        query_embedding = self.get_embedding(query)
         
         results = self.index.query(
             vector=query_embedding,
@@ -100,7 +135,7 @@ class ProcurementConsultant:
         
         return results.matches
     
-    def get_enhanced_context(self, query, top_k=5):
+    def get_enhanced_context(self, query, top_k=7):
         """Retrieve comprehensive context from multiple relevant documents"""
         results = self.search_documents(query, top_k=top_k)
         
@@ -122,13 +157,25 @@ class ProcurementConsultant:
         
         return "\n\n---\n\n".join(context_parts)
     
-    def consult(self, user_input, language="english", conversation_history=None):
-
+    def consult(self, user_input, language="english"):
+        """
+        Main consultation function - provides expert guidance
+        
+        Args:
+            user_input (str): User's question or problem
+            language (str): 'english' or 'bangla'
+        
+        Returns:
+            str: Expert consultation response
+        """
         if language not in ["english", "bangla"]:
             return "Error: Language must be 'english' or 'bangla'"
         
+        # Analyze user intent
+        intent_analysis = self.analyze_query_intent(user_input, language)
+        
         # Get comprehensive context from documents
-        context = self.get_enhanced_context(user_input, top_k=5)
+        context = self.get_enhanced_context(user_input, top_k=7)
         
         # Select appropriate prompt
         if language == "english":
@@ -136,25 +183,22 @@ class ProcurementConsultant:
         else:
             system_prompt = self.bangla_prompt.format(context=context)
         
-        # Build messages array with conversation history
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Add conversation history if provided
-        if conversation_history:
-            for msg in conversation_history:
-                if msg and "role" in msg and "content" in msg:
-                    messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        # Add current user input
-        messages.append({"role": "user", "content": user_input})
+        # Enhanced user message with intent
+        if intent_analysis:
+            user_message = f"User Query: {user_input}\n\nIntent Analysis: {intent_analysis}\n\nPlease provide comprehensive consultation and guidance."
+        else:
+            user_message = user_input
         
         # Generate consultative response
         try:
             response = self.openai_client.chat.completions.create(
                 model=CHAT_MODEL,
-                messages=messages,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
                 temperature=0.5,  # Slightly higher for more natural consultation
-                max_tokens=2000   # More tokens for comprehensive guidance
+                max_tokens=2500   # More tokens for comprehensive guidance
             )
             
             return response.choices[0].message.content
@@ -166,13 +210,21 @@ class ProcurementConsultant:
             }
             return error_msg[language]
     
-    def consult_with_details(self, user_input, language="english", conversation_history=None):
-
-        # Get documents
-        results = self.search_documents(user_input, top_k=5)
+    def consult_with_details(self, user_input, language="english"):
+        """
+        Consultation with full details including sources and intent
         
-        # Get consultation with conversation history
-        answer = self.consult(user_input, language, conversation_history)
+        Returns:
+            dict: Complete consultation response with metadata
+        """
+        # Analyze intent
+        intent_analysis = self.analyze_query_intent(user_input, language)
+        
+        # Get documents
+        results = self.search_documents(user_input, top_k=7)
+        
+        # Get consultation
+        answer = self.consult(user_input, language)
         
         # Format sources
         sources = []
@@ -188,30 +240,38 @@ class ProcurementConsultant:
         
         return {
             'answer': answer,
+            'intent_analysis': intent_analysis,
             'sources': sources,
             'total_sources_used': len(sources)
         }
 
 
-def get_consultation(text_input, language="english", conversation_history=None):
-
+def get_consultation(text_input, language="english"):
+    """
+    Get expert consultation on procurement issues
+    
+    Args:
+        text_input (str): User's question or problem description
+        language (str): 'english' or 'bangla'
+    
+    Returns:
+        dict: JSON response with consultation and metadata
+    """
     consultant = ProcurementConsultant(index_name="bangladesh-procurement-docs")
-    result = consultant.consult_with_details(text_input, language=language, conversation_history=conversation_history)
+    result = consultant.consult_with_details(text_input, language=language)
     
     return {
         "Response": result['answer'],
     }
 
 
+
+
 if __name__ == "__main__":
 
+
+    answer = get_consultation(language= "english", 
+                  text_input="I need to procure IT equipment worth 50 lakh taka. What method should I use?"
+                  )
     
-    answer = get_consultation(
-        language="english",
-        text_input="What documents do I need to prepare for this?",
-        conversation_history=[
-        {"role": "user", "content": "I need to procure IT equipment worth 50 lakh taka. What method should I use?"},
-        {"role": "assistant", "content": ""}
-        ]
-    )
     print(answer)
